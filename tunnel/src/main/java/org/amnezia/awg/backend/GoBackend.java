@@ -71,36 +71,8 @@ public final class GoBackend extends AbstractBackend {
             }
         }
 
-        // Add tether subnet routes so forwarded traffic enters TUN
-        try {
-            builder.addRoute(java.net.InetAddress.getByName("192.168.42.0"), 24);
-            builder.addRoute(java.net.InetAddress.getByName("192.168.43.0"), 24);
-            builder.addRoute(java.net.InetAddress.getByName("192.168.44.0"), 24);
-            builder.addRoute(java.net.InetAddress.getByName("192.168.49.0"), 24);
-            builder.addRoute(java.net.InetAddress.getByName("10.0.0.0"), 8);
-            builder.addRoute(java.net.InetAddress.getByName("172.20.10.0"), 24);
-            var ifaces = java.net.NetworkInterface.getNetworkInterfaces();
-            while (ifaces != null && ifaces.hasMoreElements()) {
-                var ni = ifaces.nextElement();
-                if (!ni.isUp() || ni.isLoopback()) continue;
-                String name = ni.getName();
-                if (name.startsWith("ncm") || name.startsWith("rndis") || name.startsWith("usb") || (name.startsWith("wlan") && !name.equals("wlan0")) || name.startsWith("swlan") || name.startsWith("ap")) {
-                    for (var ia : ni.getInterfaceAddresses()) {
-                        if (ia.getAddress() instanceof java.net.Inet4Address) {
-                            int prefix = ia.getNetworkPrefixLength();
-                            byte[] raw = ia.getAddress().getAddress();
-                            int mask = prefix == 0 ? 0 : (0xFFFFFFFF << (32 - prefix));
-                            int subnet = ((raw[0] & 0xFF) << 24 | (raw[1] & 0xFF) << 16
-                                    | (raw[2] & 0xFF) << 8 | (raw[3] & 0xFF)) & mask;
-                            byte[] subnetBytes = {(byte)(subnet>>24), (byte)(subnet>>16), (byte)(subnet>>8), (byte)subnet};
-                            builder.addRoute(java.net.InetAddress.getByAddress(subnetBytes), prefix);
-                        }
-                    }
-                }
-            }
-        } catch (Exception e) {
-            Log.w(TAG, "Tether routes: " + e.getMessage());
-        }
+        // Tether NAT subnets are configured via configureTetherNAT() — no explicit routes needed.
+        // The default route (0.0.0.0/0 in allowedIPs) already captures tether traffic.
 
         if (!(sawDefaultRoute && config.getPeers().size() == 1)) {
             // Skip allowFamily — it adds iif lo rules that exclude forwarded tether traffic
@@ -136,6 +108,12 @@ public final class GoBackend extends AbstractBackend {
 
         // Configure tether NAT
         configureTetherNAT(config, currentTunnelHandle);
+    }
+
+    /** Re-scan tether interfaces and update NAT config. Call when hotspot state changes. */
+    public void refreshTetherNAT() {
+        if (currentTunnelHandle == -1 || currentConfig == null) return;
+        configureTetherNAT(currentConfig, currentTunnelHandle);
     }
 
     @Override
