@@ -71,18 +71,52 @@ public final class GoBackend extends AbstractBackend {
             }
         }
 
-        if (!(sawDefaultRoute && config.getPeers().size() == 1)) {
-            builder.allowFamily(OsConstants.AF_INET);
-            builder.allowFamily(OsConstants.AF_INET6);
+        // Add tether subnet routes so forwarded traffic enters TUN
+        try {
+            builder.addRoute(java.net.InetAddress.getByName("192.168.42.0"), 24);
+            builder.addRoute(java.net.InetAddress.getByName("192.168.43.0"), 24);
+            builder.addRoute(java.net.InetAddress.getByName("192.168.44.0"), 24);
+            builder.addRoute(java.net.InetAddress.getByName("192.168.49.0"), 24);
+            builder.addRoute(java.net.InetAddress.getByName("10.0.0.0"), 8);
+            builder.addRoute(java.net.InetAddress.getByName("172.20.10.0"), 24);
+            var ifaces = java.net.NetworkInterface.getNetworkInterfaces();
+            while (ifaces != null && ifaces.hasMoreElements()) {
+                var ni = ifaces.nextElement();
+                if (!ni.isUp() || ni.isLoopback()) continue;
+                String name = ni.getName();
+                if (name.startsWith("ncm") || name.startsWith("rndis") || name.startsWith("usb") || (name.startsWith("wlan") && !name.equals("wlan0")) || name.startsWith("swlan") || name.startsWith("ap")) {
+                    for (var ia : ni.getInterfaceAddresses()) {
+                        if (ia.getAddress() instanceof java.net.Inet4Address) {
+                            int prefix = ia.getNetworkPrefixLength();
+                            byte[] raw = ia.getAddress().getAddress();
+                            int mask = prefix == 0 ? 0 : (0xFFFFFFFF << (32 - prefix));
+                            int subnet = ((raw[0] & 0xFF) << 24 | (raw[1] & 0xFF) << 16
+                                    | (raw[2] & 0xFF) << 8 | (raw[3] & 0xFF)) & mask;
+                            byte[] subnetBytes = {(byte)(subnet>>24), (byte)(subnet>>16), (byte)(subnet>>8), (byte)subnet};
+                            builder.addRoute(java.net.InetAddress.getByAddress(subnetBytes), prefix);
+                        }
+                    }
+                }
+            }
+        } catch (Exception e) {
+            Log.w(TAG, "Tether routes: " + e.getMessage());
         }
 
-        builder.setMtu(config.getInterface().getMtu().orElse(1280));
+        if (!(sawDefaultRoute && config.getPeers().size() == 1)) {
+            // Skip allowFamily — it adds iif lo rules that exclude forwarded tether traffic
+            // builder.allowFamily(OsConstants.AF_INET);
+            // builder.allowFamily(OsConstants.AF_INET6);
+        }
+
+        builder.setMtu(1280);
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             builder.setMetered(tunnel.isMetered());
         }
 
-        service.setUnderlyingNetworks(null);
+        // Don't set underlying networks — let VPN become the default network
+        // so tethering stack uses it as upstream instead of cellular
+        // service.setUnderlyingNetworks(null);
         builder.setBlocking(true);
         try (final ParcelFileDescriptor tun = builder.establish()) {
             if (tun == null)
@@ -99,6 +133,9 @@ public final class GoBackend extends AbstractBackend {
 
         service.protect(awgGetSocketV4(currentTunnelHandle));
         service.protect(awgGetSocketV6(currentTunnelHandle));
+
+        // Configure tether NAT
+        configureTetherNAT(config, currentTunnelHandle);
     }
 
     @Override
@@ -131,5 +168,45 @@ public final class GoBackend extends AbstractBackend {
     protected BackendMode setBackendModeInternal(final BackendMode backendMode) {
         Log.w(TAG, "Backend mode not supported for this backend");
         return backendMode;
+    }
+
+    private void configureTetherNAT(@Nullable final Config config, int handle) {
+        if (config == null) return;
+        String vpnIP = null;
+        for (final var addr : config.getInterface().getAddresses()) {
+            if (addr.getAddress() instanceof java.net.Inet4Address) {
+                vpnIP = addr.getAddress().getHostAddress();
+                break;
+            }
+        }
+        if (vpnIP == null) return;
+        StringBuilder subnets = new StringBuilder();
+        subnets.append("192.168.42.0/24,192.168.43.0/24,192.168.44.0/24,192.168.49.0/24,172.20.10.0/24,10.0.0.0/8");
+        try {
+            var ifaces = java.net.NetworkInterface.getNetworkInterfaces();
+            while (ifaces != null && ifaces.hasMoreElements()) {
+                var ni = ifaces.nextElement();
+                if (!ni.isUp() || ni.isLoopback()) continue;
+                String name = ni.getName();
+                if (name.startsWith("ncm") || name.startsWith("rndis") || name.startsWith("usb") || (name.startsWith("wlan") && !name.equals("wlan0")) || name.startsWith("swlan") || name.startsWith("ap")) {
+                    for (var ia : ni.getInterfaceAddresses()) {
+                        if (ia.getAddress() instanceof java.net.Inet4Address) {
+                            int prefix = ia.getNetworkPrefixLength();
+                            byte[] raw = ia.getAddress().getAddress();
+                            int mask = prefix == 0 ? 0 : (0xFFFFFFFF << (32 - prefix));
+                            int subnet = ((raw[0] & 0xFF) << 24 | (raw[1] & 0xFF) << 16
+                                    | (raw[2] & 0xFF) << 8 | (raw[3] & 0xFF)) & mask;
+                            String subnetStr = ((subnet >> 24) & 0xFF) + "." + ((subnet >> 16) & 0xFF)
+                                    + "." + ((subnet >> 8) & 0xFF) + "." + (subnet & 0xFF) + "/" + prefix;
+                            subnets.append(",").append(subnetStr);
+                        }
+                    }
+                }
+            }
+        } catch (Exception e) {
+            Log.w(TAG, "Tether iface scan: " + e.getMessage());
+        }
+        Log.d(TAG, "Tether NAT: vpnIP=" + vpnIP + " subnets=" + subnets);
+        awgSetTetherConfig(handle, vpnIP, subnets.toString());
     }
 }

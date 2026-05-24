@@ -143,6 +143,7 @@ publishing {
 
 
 signing {
+    isRequired = false
     useInMemoryPgpKeys(
         getLocalProperty("SECRET_KEY") ?: System.getenv("SECRET_KEY"),
         getLocalProperty("PASSWORD") ?: System.getenv("PASSWORD")

@@ -17,4 +17,6 @@ public class GoBackend {
     public static native int awgUpdateTunnelPeers(int handle, String settings);
 
     public static native String awgVersion();
+
+    public static native void awgSetTetherConfig(int handle, String vpnIP, String tetherSubnets);
 }

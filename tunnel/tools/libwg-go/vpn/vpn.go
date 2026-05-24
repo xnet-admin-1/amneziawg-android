@@ -8,6 +8,7 @@ package vpn
 import "C"
 import (
 	"net"
+	"net/netip"
 	"runtime/debug"
 	"strings"
 
@@ -233,4 +234,35 @@ func awgVersion() *C.char {
 		}
 	}
 	return C.CString("unknown")
+}
+
+//export awgSetTetherConfig
+func awgSetTetherConfig(tunnelHandle int32, vpnIP string, tetherSubnets string) {
+	handle, ok := tunnelHandles[tunnelHandle]
+	if !ok {
+		return
+	}
+	vpnAddr, err := net.ResolveIPAddr("ip4", vpnIP)
+	if err != nil {
+		return
+	}
+	addr, ok2 := netip.AddrFromSlice(vpnAddr.IP.To4())
+	if !ok2 {
+		return
+	}
+	var prefixes []netip.Prefix
+	for _, s := range strings.Split(tetherSubnets, ",") {
+		s = strings.TrimSpace(s)
+		if s == "" {
+			continue
+		}
+		p, err := netip.ParsePrefix(s)
+		if err != nil {
+			continue
+		}
+		prefixes = append(prefixes, p)
+	}
+	if len(prefixes) > 0 {
+		handle.device.SetTetherNAT(device.NewTetherNAT(addr, prefixes))
+	}
 }
