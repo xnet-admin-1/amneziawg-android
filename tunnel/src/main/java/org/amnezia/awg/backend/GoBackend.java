@@ -112,7 +112,11 @@ public final class GoBackend extends AbstractBackend {
 
     /** Re-scan tether interfaces and update NAT config. Call when hotspot state changes. */
     public void refreshTetherNAT() {
-        if (currentTunnelHandle == -1 || currentConfig == null) return;
+        if (currentTunnelHandle == -1 || currentConfig == null) {
+            Log.d(TAG, "refreshTetherNAT: skipped (handle=" + currentTunnelHandle + " config=" + (currentConfig != null) + ")");
+            return;
+        }
+        Log.d(TAG, "refreshTetherNAT: reconfiguring");
         configureTetherNAT(currentConfig, currentTunnelHandle);
     }
 
