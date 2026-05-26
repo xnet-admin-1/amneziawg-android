@@ -9,6 +9,7 @@
 
 struct go_string { const char *str; long n; };
 extern int awgTurnOn(struct go_string ifname, int tun_fd, struct go_string settings, struct go_string uapipath);
+extern int awgTurnOnRaw(struct go_string ifname, int tun_fd, struct go_string settings);
 extern void awgTurnOff(int handle);
 extern int awgGetSocketV4(int handle);
 extern int awgGetSocketV6(int handle);
@@ -16,6 +17,9 @@ extern char *awgGetConfig(int handle);
 extern char *awgVersion();
 extern int awgUpdateTunnelPeers(int handle, struct go_string settings);
 extern void awgSetTetherConfig(int handle, struct go_string vpnIP, struct go_string tetherSubnets);
+struct go_slice { void *data; long len; long cap; };
+extern int awgInjectTetherPacket(int handle, struct go_slice packet, int size);
+extern int awgReadTetherPacket(int handle, struct go_slice buf, int bufSize);
 
 JNIEXPORT jint JNICALL Java_org_amnezia_awg_GoBackend_awgTurnOn(JNIEnv *env, jclass c, jstring ifname, jint tun_fd, jstring settings, jstring uapipath)
 {
@@ -44,6 +48,24 @@ JNIEXPORT jint JNICALL Java_org_amnezia_awg_GoBackend_awgTurnOn(JNIEnv *env, jcl
 JNIEXPORT void JNICALL Java_org_amnezia_awg_GoBackend_awgTurnOff(JNIEnv *env, jclass c, jint handle)
 {
 	awgTurnOff(handle);
+}
+
+JNIEXPORT jint JNICALL Java_org_amnezia_awg_GoBackend_awgTurnOnRaw(JNIEnv *env, jclass c, jstring ifname, jint tun_fd, jstring settings)
+{
+	const char *ifname_str = (*env)->GetStringUTFChars(env, ifname, 0);
+	size_t ifname_len = (*env)->GetStringUTFLength(env, ifname);
+	const char *settings_str = (*env)->GetStringUTFChars(env, settings, 0);
+	size_t settings_len = (*env)->GetStringUTFLength(env, settings);
+	int ret = awgTurnOnRaw((struct go_string){
+		.str = ifname_str,
+		.n = ifname_len
+	}, tun_fd, (struct go_string){
+		.str = settings_str,
+		.n = settings_len
+	});
+	(*env)->ReleaseStringUTFChars(env, ifname, ifname_str);
+	(*env)->ReleaseStringUTFChars(env, settings, settings_str);
+	return ret;
 }
 
 JNIEXPORT jint JNICALL Java_org_amnezia_awg_GoBackend_awgGetSocketV4(JNIEnv *env, jclass c, jint handle)
@@ -105,4 +127,36 @@ JNIEXPORT void JNICALL Java_org_amnezia_awg_GoBackend_awgSetTetherConfig(JNIEnv 
 	});
 	(*env)->ReleaseStringUTFChars(env, vpnIP, vpnIP_str);
 	(*env)->ReleaseStringUTFChars(env, tetherSubnets, subnets_str);
+}
+
+JNIEXPORT jint JNICALL Java_org_amnezia_awg_GoBackend_awgInjectTetherPacket(JNIEnv *env, jclass c, jint handle, jbyteArray packet, jint size)
+{
+	jbyte *buf = (*env)->GetByteArrayElements(env, packet, NULL);
+	int ret = awgInjectTetherPacket(handle, (struct go_slice){.data = buf, .len = size, .cap = size}, size);
+	(*env)->ReleaseByteArrayElements(env, packet, buf, JNI_ABORT);
+	return ret;
+}
+
+JNIEXPORT jint JNICALL Java_org_amnezia_awg_GoBackend_awgReadTetherPacket(JNIEnv *env, jclass c, jint handle, jbyteArray buf, jint bufSize)
+{
+	jbyte *data = (*env)->GetByteArrayElements(env, buf, NULL);
+	int ret = awgReadTetherPacket(handle, (struct go_slice){.data = data, .len = bufSize, .cap = bufSize}, bufSize);
+	(*env)->ReleaseByteArrayElements(env, buf, data, 0);
+	return ret;
+}
+
+JNIEXPORT jint JNICALL Java_com_zaneschepke_wireguardautotunnel_core_tether_TetherWgServer_awgInjectTetherPacket(JNIEnv *env, jclass c, jint handle, jbyteArray packet, jint size)
+{
+	jbyte *buf = (*env)->GetByteArrayElements(env, packet, NULL);
+	int ret = awgInjectTetherPacket(handle, (struct go_slice){.data = buf, .len = size, .cap = size}, size);
+	(*env)->ReleaseByteArrayElements(env, packet, buf, JNI_ABORT);
+	return ret;
+}
+
+JNIEXPORT jint JNICALL Java_com_zaneschepke_wireguardautotunnel_core_tether_TetherWgServer_awgReadTetherPacket(JNIEnv *env, jclass c, jint handle, jbyteArray buf, jint bufSize)
+{
+	jbyte *data = (*env)->GetByteArrayElements(env, buf, NULL);
+	int ret = awgReadTetherPacket(handle, (struct go_slice){.data = data, .len = bufSize, .cap = bufSize}, bufSize);
+	(*env)->ReleaseByteArrayElements(env, buf, data, 0);
+	return ret;
 }

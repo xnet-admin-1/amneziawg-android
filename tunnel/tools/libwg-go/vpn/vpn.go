@@ -127,6 +127,58 @@ func awgTurnOn(interfaceName string, tunFd int32, settings string, uapiPath stri
 	return handle
 }
 
+//export awgTurnOnRaw
+func awgTurnOnRaw(interfaceName string, tunFd int32, settings string) int32 {
+	tunnel, err := tun.CreateUnmonitoredTUNFromFDRaw(int(tunFd))
+	if err != nil {
+		unix.Close(int(tunFd))
+		shared.LogError(tag, "CreateUnmonitoredTUNFromFDRaw: %v", err)
+		return -1
+	}
+
+	conf, err := wireproxyawg.ParseConfigString(settings)
+	if err != nil {
+		shared.LogError(tag, "Invalid config file", err)
+		unix.Close(int(tunFd))
+		if tunnel != nil {
+			tunnel.Close()
+		}
+		return -1
+	}
+
+	statusCB2 := func(code device.StatusCode) {}
+	tunDevice := device.NewDevice(tunnel, conn.NewStdNetBind(), shared.NewLogger("Tun/"+interfaceName), conf.Device.DomainBlockingEnabled, statusCB2)
+
+	ipcRequest, err := wireproxyawg.CreateIPCRequest(conf.Device, false)
+	if err != nil {
+		shared.LogError(tag, "CreateIPCRequest: %v", err)
+		unix.Close(int(tunFd))
+		tunDevice.Close()
+		return -1
+	}
+
+	err = tunDevice.IpcSet(ipcRequest.IpcRequest)
+	if err != nil {
+		shared.LogError(tag, "IpcSet: %v", err)
+		unix.Close(int(tunFd))
+		tunDevice.Close()
+		return -1
+	}
+
+	tunDevice.Up()
+
+	handle, err2 := util.GenerateHandle(tunnelHandles)
+	if err2 != nil {
+		shared.LogError(tag, "Unable to find empty handle", err2)
+		tunDevice.Close()
+		return -1
+	}
+
+	tunnelHandles[handle] = TunnelHandle{device: tunDevice, uapi: nil}
+	shared.LogDebug(tag, "Device started")
+	return handle
+}
+
 //export awgUpdateTunnelPeers
 func awgUpdateTunnelPeers(tunnelHandle int32, settings string) int32 {
 	handle, ok := tunnelHandles[tunnelHandle]
@@ -265,4 +317,43 @@ func awgSetTetherConfig(tunnelHandle int32, vpnIP string, tetherSubnets string) 
 	if len(prefixes) > 0 {
 		handle.device.SetTetherNAT(device.NewTetherNAT(addr, prefixes))
 	}
+}
+
+//export awgInjectTetherPacket
+func awgInjectTetherPacket(tunnelHandle int32, packet []byte, size int32) int32 {
+	handle, ok := tunnelHandles[tunnelHandle]
+	if !ok {
+		return -1
+	}
+	offset := device.MessageTransportHeaderSize
+	buf := make([]byte, int(size)+offset)
+	copy(buf[offset:], packet[:size])
+	bufs := [][]byte{buf}
+	_, err := handle.device.Tun().Write(bufs, offset)
+	if err != nil {
+		return -1
+	}
+	return 0
+}
+
+//export awgReadTetherPacket
+func awgReadTetherPacket(tunnelHandle int32, buf []byte, bufSize int32) int32 {
+	handle, ok := tunnelHandles[tunnelHandle]
+	if !ok {
+		return -1
+	}
+	nat := handle.device.GetTetherNAT()
+	if nat == nil {
+		return 0
+	}
+	pkt := nat.DequeueResponse()
+	if pkt == nil {
+		return 0
+	}
+	n := len(pkt)
+	if int32(n) > bufSize {
+		return -1
+	}
+	copy(buf[:n], pkt)
+	return int32(n)
 }

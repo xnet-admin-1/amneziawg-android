@@ -7,6 +7,7 @@ package org.amnezia.awg.backend;
 
 import android.content.Context;
 import android.content.Intent;
+import android.net.VpnService;
 import android.os.Build;
 import android.os.ParcelFileDescriptor;
 import android.system.OsConstants;
@@ -71,24 +72,12 @@ public final class GoBackend extends AbstractBackend {
             }
         }
 
-        // Tether NAT subnets are configured via configureTetherNAT() — no explicit routes needed.
-        // The default route (0.0.0.0/0 in allowedIPs) already captures tether traffic.
-
-        if (!(sawDefaultRoute && config.getPeers().size() == 1)) {
-            // Skip allowFamily — it adds iif lo rules that exclude forwarded tether traffic
-            // builder.allowFamily(OsConstants.AF_INET);
-            // builder.allowFamily(OsConstants.AF_INET6);
-        }
-
         builder.setMtu(1280);
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             builder.setMetered(tunnel.isMetered());
         }
 
-        // Don't set underlying networks — let VPN become the default network
-        // so tethering stack uses it as upstream instead of cellular
-        // service.setUnderlyingNetworks(null);
         builder.setBlocking(true);
         try (final ParcelFileDescriptor tun = builder.establish()) {
             if (tun == null)
@@ -108,6 +97,45 @@ public final class GoBackend extends AbstractBackend {
 
         // Configure tether NAT
         configureTetherNAT(config, currentTunnelHandle);
+
+        // Start tether WG server on detected ncm0 interface
+        startTetherWgServer(service);
+    }
+
+    private TetherWgServer tetherWgServer;
+
+    private void startTetherWgServer(final VpnService service) {
+        new Thread(() -> {
+            try {
+                // Find tether interface
+                InetAddress tetherAddr = null;
+                var ifaces = java.net.NetworkInterface.getNetworkInterfaces();
+                while (ifaces != null && ifaces.hasMoreElements()) {
+                    var ni = ifaces.nextElement();
+                    if (!ni.isUp()) continue;
+                    String name = ni.getName();
+                    if (name.startsWith("ncm") || name.startsWith("rndis") || name.startsWith("usb")) {
+                        for (var ia : ni.getInterfaceAddresses()) {
+                            if (ia.getAddress() instanceof java.net.Inet4Address) {
+                                tetherAddr = ia.getAddress();
+                                break;
+                            }
+                        }
+                    }
+                    if (tetherAddr != null) break;
+                }
+                if (tetherAddr == null) {
+                    Log.d(TAG, "No tether interface found, WG server not started");
+                    return;
+                }
+                if (tetherWgServer != null) tetherWgServer.stop();
+                tetherWgServer = new TetherWgServer();
+                tetherWgServer.start(tetherAddr, currentTunnelHandle, service);
+                Log.i(TAG, "Tether WG server config:\n" + tetherWgServer.getClientConfig(tetherAddr.getHostAddress()));
+            } catch (Exception e) {
+                Log.e(TAG, "Tether WG server failed: " + e.getMessage());
+            }
+        }, "TetherWgInit").start();
     }
 
     /** Re-scan tether interfaces and update NAT config. Call when hotspot state changes. */
@@ -126,6 +154,7 @@ public final class GoBackend extends AbstractBackend {
             Log.w(TAG, "Tunnel already down");
             return;
         }
+        if (tetherWgServer != null) { tetherWgServer.stop(); tetherWgServer = null; }
         int handleToClose = currentTunnelHandle;
         tunnelActionHandler.runPreDown(config != null ? config.getInterface().getPreDown() : null);
         awgTurnOff(handleToClose);

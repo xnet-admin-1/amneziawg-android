@@ -62,6 +62,7 @@ public abstract class AbstractBackend implements Backend {
     @Nullable protected Tunnel currentTunnel;
 
     protected int currentTunnelHandle = -1;
+    public int getCurrentTunnelHandle() { return currentTunnelHandle; }
 
     protected final ReentrantLock tunnelLock = new ReentrantLock();
 
